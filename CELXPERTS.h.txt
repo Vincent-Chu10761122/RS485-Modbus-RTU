@@ -1,0 +1,600 @@
+//  This file is for CELXPERTS batterys
+class CELXPERTS_Battery
+{
+public:
+    CELXPERTS_Battery(ros::NodeHandle n, std::string comport, int baudrate, LogManager *log, int amount)
+    {
+        ROS_INFO("[Battery] comport:%s baudrate:%d amount:%d", comport.c_str(), baudrate, amount);
+        LOG(INFO) << "comport:" << comport << " baudrate:" << baudrate << " amount:" << amount;
+
+        // my_serial = new serial::Serial(comport, baudrate, serial::Timeout::simpleTimeout(2000), serial::eightbits, serial::parity_none, serial::stopbits_one, serial::flowcontrol_software);
+        my_serial = new serial::Serial(comport, baudrate, serial::Timeout::simpleTimeout(2000), serial::eightbits, serial::parity_none, serial::stopbits_one);
+        log_manager = log;
+        amounts = amount;
+
+        state_pub = n.advertise<gpm_msgs::BatteryState>("/battery_state", 1);
+
+        is_charge = false;
+
+        old_battery.state = 0;
+        old_battery.batteryID = 0;
+        old_battery.batteryLevel = 0;
+        old_battery.maxCellTemperature = 0;
+        old_battery.errorCode = 0;
+        old_battery.chargeCurrent = 0;
+        old_battery.dischargeCurrent = 0;
+        old_battery.Voltage = 0;
+    }
+
+    void MainLoop()
+    {
+        ros::Rate loop_rate(1);
+
+        if (my_serial->isOpen())
+        {
+            ROS_INFO("[Battery] Serial port is ready");
+            LOG(INFO) << "Serial port is ready";
+        }
+        else
+        {
+            ROS_FATAL("[Battery] Serial port open fail");
+            LOG(ERROR) << "Serial port open fail";
+            return;
+        }
+
+        while (ros::ok())
+        {
+            ros::spinOnce(); // check for incoming messages
+            ClearData(4);
+
+            for (int i = 0; i <= amounts; i++)
+            {
+                receive_data_size = receive_data_size_list[i];
+                ReadSerialData(i);
+                // connectError = ConnectCheck(receive_battery_data, amounts);
+                // if (!is_wrong)
+                //{
+                ConnectCheck(receive_battery_data, amounts);
+                //}
+                UpdateState(i, receive_battery_data);
+                SetErrCode(i);
+                usleep(15000);
+            }
+
+            MixState();
+            if (!is_wrong)
+            {
+                ShowAllStatus();
+            }
+            SetOldState();
+
+            state_pub.publish(battery_msg);
+            log_manager->CheckLog();
+            loop_rate.sleep();
+        }
+    }
+
+    void AlarmParam(int UV, int OV, int OCC, int OCD, int OT, int CT)
+    {
+        underVoltage = UV;
+        overVoltage = OV;
+        overCurrentCharge = OCC;
+        overCurrentDischarge = OCD;
+        overTemperature = OT;
+        connectErrTime = CT;
+    }
+
+private:
+    struct Battery
+    {
+        int state;
+        uint8_t errorCode;          // bit0~bit7
+        uint16_t Voltage;           // 2byte
+        uint8_t batteryLevel;       // 1byte
+        uint16_t chargeCurrent;     // 2byte
+        uint16_t dischargeCurrent;  // 2byte
+        uint8_t maxCellTemperature; // 1byte
+        uint8_t minCellTemperature; // 1byte
+        uint16_t cycle;             // 2byte
+        uint16_t batteryID;         // 2byte
+        uint8_t manufacturungDateY; // 1byte
+        uint8_t manufacturungDateM; // 1byte
+        uint8_t manufacturungDateD; // 1byte
+        uint8_t chargeTime;         // 2 byte
+        uint8_t useTime;            // 2 byte
+    };
+
+    // ros::NodeHandle n;
+    ros::Publisher state_pub;
+    gpm_msgs::BatteryState battery_msg;
+
+    crc crc_count;
+
+    LogManager *log_manager;
+    serial::Serial *my_serial;
+
+    int read_cmd_size = 7;
+    int receive_data_size = 58;
+    int amounts;
+    int logCount = 0;
+
+    Battery batterys[4], old_battery;
+
+    uint8_t read_battery_state_cmd[4][7] = {{0xFF, 0x55, 0xCB, 0xEA, 0xFF, 0x5F, 0x06},  // read battery average data
+                                            {0xFF, 0x55, 0xA0, 0xDB, 0x01, 0xBA, 0xCA},  // read battery1
+                                            {0xFF, 0x55, 0xA0, 0xDB, 0x02, 0xFA, 0xCB},  // read battery2
+                                            {0xFF, 0x55, 0xA0, 0xDB, 0x03, 0x3B, 0x0B}}; // read battery3
+    uint8_t receive_battery_data[58];
+
+    bool is_charge;
+    bool is_alarm[4] = {false, false, false, false};
+    bool is_alarm_set[4] = {false, false, false, false};
+    bool is_alarm_change[4] = {false, false, false, false};
+    bool is_alarm_check = false;
+    int battery_level;
+    int old_alarm[4] = {0, 0, 0, 0};
+    int receive_data_size_list[4] = {25, 58, 58, 58};
+
+    // Alarm Param
+    int underVoltage;
+    int overVoltage;
+    int overCurrentCharge;
+    int overCurrentDischarge;
+    int overTemperature;
+    int connectErrorCount = 0;
+    int connectErrTime;
+    bool connectError = false;
+    bool connectErrorSend = false;
+    bool is_wrong = false;
+
+    int16_t charge_current;
+    uint8_t maxCellVoltage;     // 1byte
+    uint8_t minCellVoltage;     // 1byte
+    uint8_t manufacturungDateY; // 1byte
+    uint8_t manufacturungDateM; // 1byte
+    uint8_t manufacturungDateD; // 1byte
+
+    void UpdateState(int batteryNum, uint8_t data[])
+    {
+        int data_length = receive_data_size;
+        uint8_t *crc = crc_count.crc_count(data, data_length - 2);
+        batterys[batteryNum].state = 0;
+
+        if (data[data_length - 2] == crc[0] && data[data_length - 1] == crc[1])
+        {
+            batterys[batteryNum].errorCode = data[5];
+            if (batterys[batteryNum].errorCode == 0)
+            {
+                batterys[batteryNum].state = 1;
+                if (is_alarm[batteryNum])
+                {
+                    is_alarm[batteryNum] = false;
+                    ROS_INFO("Battery Alarm reset");
+                    LOG(INFO) << "Battery Alarm reset";
+                }
+            }
+            else
+            {
+                // Error Code
+                if (!is_alarm[batteryNum] || (batterys[batteryNum].errorCode != old_alarm[batteryNum]))
+                {
+                    is_alarm_change[batteryNum] = true;
+                    SetErrLog(batterys[batteryNum].errorCode, batteryNum);
+                }
+                is_alarm[batteryNum] = true;
+            }
+
+            old_alarm[batteryNum] = batterys[batteryNum].errorCode;
+
+            if (batteryNum != 0)
+            {
+                batterys[batteryNum].batteryID = 1;
+                batterys[batteryNum].Voltage = ((data[8] << 8) & 0xFF00) | (data[7] & 0x00FF);
+                batterys[batteryNum].batteryLevel = data[11];
+                batterys[batteryNum].chargeCurrent = ((data[13] << 8) & 0xFF00) | (data[12] & 0x00FF);
+                batterys[batteryNum].dischargeCurrent = ~(((data[15] << 8) & 0xFF00) | (data[14] & 0x00FF)) + 1;
+                batterys[batteryNum].maxCellTemperature = data[22];
+                batterys[batteryNum].minCellTemperature = data[23];
+                batterys[batteryNum].cycle = ((data[25] << 8) & 0xFF00) | (data[24] & 0x00FF);
+                batterys[batteryNum].chargeTime = ((data[27] << 8) & 0xFF00) | (data[26] & 0x00FF);
+                batterys[batteryNum].useTime = ((data[51] << 8) & 0xFF00) | (data[50] & 0x00FF);
+
+                maxCellVoltage = ((data[19] << 8) & 0xFF00) | (data[18] & 0x00FF);
+                minCellVoltage = ((data[21] << 8) & 0xFF00) | (data[20] & 0x00FF);
+                manufacturungDateY = ((int)data[47] / 16) * 10 + ((int)data[47] % 16);
+                manufacturungDateM = ((int)data[48] / 16) * 10 + ((int)data[48] % 16);
+                manufacturungDateD = ((int)data[49] / 16) * 10 + ((int)data[49] % 16);
+            }
+            else
+            {
+                batterys[batteryNum].batteryID = 1;
+                batterys[batteryNum].Voltage = ((data[8] << 8) & 0xFF00) | (data[7] & 0x00FF);
+                batterys[batteryNum].batteryLevel = data[6];
+                batterys[batteryNum].chargeCurrent = ((data[10] << 8) & 0xFF00) | (data[9] & 0x00FF);
+                batterys[batteryNum].dischargeCurrent = ~(((data[12] << 8) & 0xFF00) | (data[11] & 0x00FF)) + 1;
+                batterys[batteryNum].maxCellTemperature = data[15];
+                batterys[batteryNum].minCellTemperature = data[16];
+                /*batterys[batteryNum].cycle = ((data[25] << 8) & 0xFF00) | (data[24] & 0x00FF);
+                batterys[batteryNum].chargeTime = ((data[27] << 8) & 0xFF00) | (data[26] & 0x00FF);
+                batterys[batteryNum].useTime = ((data[51] << 8) & 0xFF00) | (data[50] & 0x00FF);
+
+                maxCellVoltage = ((data[19] << 8) & 0xFF00) | (data[18] & 0x00FF);
+                minCellVoltage = ((data[21] << 8) & 0xFF00) | (data[20] & 0x00FF);
+                manufacturungDateY = ((int)data[47] / 16) * 10 + ((int)data[47] % 16);
+                manufacturungDateM = ((int)data[48] / 16) * 10 + ((int)data[48] % 16);
+                manufacturungDateD = ((int)data[49] / 16) * 10 + ((int)data[49] % 16);*/
+            }
+        }
+        else
+        {
+            // CRC Wrong
+
+            /*std::string data_log;
+            for (int i = 0; i < receive_data_size; i++)
+            {
+                std::stringstream ss;
+                std::string temp;
+                ss << std::hex << (unsigned)data[i];
+                ss >> temp;is_wrong
+                data_log += temp + " ";
+            }
+            data_log += "\nCRC: ";
+            for (int i = 0; i < 2; i++)
+            {
+                std::stringstream ss;
+                std::string temp;
+                ss << std::hex << (unsigned)crc[i];
+                ss >> temp;
+                data_log += temp + " ";
+            }
+            ROS_ERROR("Wrong data number:%d", batteryNum);
+            LOG(ERROR) << "Wrong data number: " << batteryNum;
+            ROS_ERROR("Wrong data");
+            LOG(ERROR) << "Wrong data: " << data_log;*/
+            is_wrong = true;
+            ROS_ERROR("Wrong data");
+            LOG(ERROR) << "Wrong data";
+        }
+    }
+
+    void MixState()
+    {
+        if (!connectError && !is_wrong)
+        {
+            // check Each battery
+            bool battery_status = true;
+            bool battery_alarm_change = false;
+            int batteryVoltage = 0;
+            int errorCode = 0;
+            // Check all status
+            for (int i = 0; i <= amounts; i++)
+            {
+                battery_status = batterys[i].state && battery_status;
+                battery_alarm_change = is_alarm_change[i] || battery_alarm_change;
+                errorCode += batterys[i].errorCode;
+                // LOG(INFO) << battery_status << " " << batterys[i].state;
+            }
+
+            if (battery_status)
+            {
+                // Data to Battery Message
+                battery_msg.state = 1;
+                battery_msg.batteryID = 0;
+                battery_msg.batteryLevel = batterys[0].batteryLevel;
+                battery_msg.maxCellTemperature = batterys[0].maxCellTemperature;
+
+                for (int i = 1; i <= amounts; i++)
+                {
+                    batteryVoltage += batterys[i].Voltage;
+                    battery_msg.chargeCurrent += batterys[i].chargeCurrent;
+                    battery_msg.dischargeCurrent += batterys[i].dischargeCurrent;
+                }
+                battery_msg.Voltage = batteryVoltage / amounts;
+                battery_msg.chargeCurrent = battery_msg.chargeCurrent / amounts;
+                battery_msg.dischargeCurrent = battery_msg.dischargeCurrent / amounts;
+
+                // Status Change or Error
+                if ((!is_alarm_check && errorCode != 0) || battery_alarm_change)
+                {
+                    is_alarm_check = true;
+                    CheckErrCode();
+                    ShowAllStatus();
+                }
+                else if (is_alarm_check && errorCode == 0)
+                {
+                    is_alarm_check = false;
+                    battery_msg.errorCode = 0;
+                }
+
+                if (!is_charge && battery_msg.chargeCurrent > 100)
+                {
+                    is_charge = true;
+                    ROS_INFO("[Battery] Charge");
+                    LOG(INFO) << "Charge battery_level:" << unsigned(battery_msg.batteryLevel);
+                    ShowAllStatus();
+                }
+                else if (is_charge && battery_msg.chargeCurrent < 100)
+                {
+                    is_charge = false;
+                    ROS_INFO("[Battery] Break Charge");
+                    LOG(INFO) << "Break Charge battery_level:" << unsigned(battery_msg.batteryLevel);
+                    ShowAllStatus();
+                }
+                if (battery_level != battery_msg.batteryLevel)
+                {
+                    battery_level = battery_msg.batteryLevel;
+                    ROS_INFO("[battery] battery_level:%d Voltage:%d", battery_msg.batteryLevel, battery_msg.Voltage);
+                    LOG(INFO) << "battery_level:" << unsigned(battery_msg.batteryLevel) << " Voltage:" << unsigned(battery_msg.Voltage);
+                    ShowAllStatus();
+                }
+            }
+        }
+        // else if (!connectErrorSend && connectError)
+        else if (connectErrorSend)
+        {
+            ROS_ERROR("Topic send connect Error send");
+            LOG(ERROR) << "Topic send connect Error send";
+            // First connect send
+            connectErrorSend = true;
+
+            battery_msg.state = -1;
+            battery_msg.batteryID = 0;
+            battery_msg.batteryLevel = 0;
+            battery_msg.maxCellTemperature = 0;
+            battery_msg.errorCode = 1;
+            battery_msg.chargeCurrent = 0;
+            battery_msg.dischargeCurrent = 0;
+            battery_msg.Voltage = 0;
+        }
+        else if (connectErrorSend)
+        {
+            ROS_ERROR("Topic send connect Error");
+            LOG(ERROR) << "Topic send connect Error";
+            // After connect send
+            battery_msg.state = 1;
+            battery_msg.batteryID = 0;
+            battery_msg.batteryLevel = 0;
+            battery_msg.maxCellTemperature = 0;
+            battery_msg.errorCode = 1;
+            battery_msg.chargeCurrent = 0;
+            battery_msg.dischargeCurrent = 0;
+            battery_msg.Voltage = 0;
+
+            SetErrLog(battery_msg.errorCode, 0);
+        }
+        else if (is_wrong)
+        {
+            ROS_ERROR("Topic send is wrong");
+            LOG(ERROR) << "Topic send is wrong";
+            // After connect send
+            battery_msg.state = old_battery.state;
+            battery_msg.batteryID = old_battery.batteryID;
+            battery_msg.batteryLevel = old_battery.batteryLevel;
+            battery_msg.maxCellTemperature = old_battery.maxCellTemperature;
+            battery_msg.errorCode = old_battery.errorCode;
+            battery_msg.chargeCurrent = old_battery.chargeCurrent;
+            battery_msg.dischargeCurrent = old_battery.dischargeCurrent;
+            battery_msg.Voltage = old_battery.Voltage;
+        }
+    }
+
+    void ClearData(int amount)
+    {
+        is_wrong = false;
+        for (int i = 0; i < amount; i++)
+        {
+            batterys[i].state = 0;
+            // batterys[i].errorCode = 0;
+            batterys[i].Voltage = 0;
+            batterys[i].batteryLevel = 0;
+            batterys[i].chargeCurrent = 0;
+            batterys[i].dischargeCurrent = 0;
+            batterys[i].maxCellTemperature = 0;
+            batterys[i].minCellTemperature = 0;
+            batterys[i].cycle = 0;
+            batterys[i].batteryID = 0;
+            batterys[i].manufacturungDateY = 0;
+            batterys[i].manufacturungDateM = 0;
+            batterys[i].manufacturungDateD = 0;
+
+            is_alarm_change[i] = false;
+        }
+    }
+
+    void CheckErrCode()
+    {
+        int ErrorList[6] = {8, 32, 4, 2, 128, 16};
+        for (int i = 0; i < 6; i++)
+        {
+            for (int j = 0; j <= amounts; j++)
+            {
+                if (batterys[j].errorCode == ErrorList[i])
+                {
+                    battery_msg.errorCode = ErrorList[i];
+                    ROS_ERROR("[battery] Topic errorCode: %d", battery_msg.errorCode);
+                    LOG(ERROR) << "Topic errorCode:" << battery_msg.errorCode;
+                    return;
+                }
+            }
+        }
+    }
+
+    void SetErrLog(int errorCode, int batteryNum)
+    {
+        ROS_ERROR("[battery] Battery Number: %d", (batteryNum + 1));
+        LOG(ERROR) << "Battery Number:" << (batteryNum + 1);
+        ROS_ERROR("[battery] errorCode: %d", errorCode);
+        LOG(ERROR) << "Battery errorCode:" << errorCode;
+        switch (errorCode)
+        {
+        case 8:
+
+            ROS_ERROR("[battery] UV(Under Voltage)");
+            LOG(ERROR) << "UV(Under Voltage";
+            break;
+
+        case 32:
+            ROS_ERROR("[battery] OV(Over Voltage)");
+            LOG(ERROR) << "OV(Over Voltage)";
+            break;
+
+        case 4:
+            ROS_ERROR("[battery] OC_D(Over Current Dis_charge)");
+            LOG(ERROR) << "OC_D(Over Current Dis_charge)";
+            break;
+
+        case 2:
+            ROS_ERROR("[battery] OC_C(Over Current Charge)");
+            LOG(ERROR) << "OC_C(Over Current  Charge";
+            break;
+
+        case 128:
+            ROS_ERROR("[battery] OT(Over Temperature)");
+            LOG(ERROR) << "[battery] OT(Over Temperature)";
+            break;
+
+        case 16:
+            ROS_ERROR("[battery] UT(Under Temperature)");
+            LOG(ERROR) << "UT(Under Temperature)";
+            break;
+
+        case 1:
+            ROS_ERROR("[battery] ERROR");
+            LOG(ERROR) << "ERROR";
+            break;
+
+        default:
+            break;
+        }
+    }
+
+    void SetErrCode(int batteryNum)
+    {
+        bool is_log = false;
+        if (!is_alarm[batteryNum] && batterys[batteryNum].Voltage != 0)
+        {
+            if (batterys[batteryNum].Voltage < underVoltage)
+            {
+                is_alarm_set[batteryNum] = true;
+                is_log = true;
+                batterys[batteryNum].errorCode = 8;
+            }
+            else if (batterys[batteryNum].Voltage > overVoltage)
+            {
+                is_alarm_set[batteryNum] = true;
+                is_log = true;
+                batterys[batteryNum].errorCode = 32;
+            }
+            else if (batterys[batteryNum].chargeCurrent > overCurrentCharge)
+            {
+                is_alarm_set[batteryNum] = true;
+                is_log = true;
+                batterys[batteryNum].errorCode = 4;
+            }
+            else if (batterys[batteryNum].dischargeCurrent > overCurrentDischarge)
+            {
+                is_alarm_set[batteryNum] = true;
+                is_log = true;
+                batterys[batteryNum].errorCode = 8;
+            }
+            else if (batterys[batteryNum].maxCellTemperature > overTemperature)
+            {
+                is_alarm_set[batteryNum] = true;
+                is_log = true;
+                batterys[batteryNum].errorCode = 64;
+            }
+            else
+            {
+                batterys[batteryNum].errorCode = 0;
+            }
+        }
+
+        if (is_log && !is_alarm_set[batteryNum])
+        {
+            SetErrLog(batterys[batteryNum].errorCode, batteryNum);
+        }
+        if (!is_log && is_alarm_set[batteryNum])
+        {
+            is_alarm_set[batteryNum] = false;
+        }
+    }
+
+    void ShowAllStatus()
+    {
+        // LOG(INFO) << "is_wrong: " << is_wrong;
+        if ((logCount > 60) || (logCount == -1))
+        {
+            logCount = 0;
+            LOG(INFO) << "ID, Level(%), Voltage(mV), ChargeCurrent(mA), DischargeCurrent(mA), Temperature(C)";
+        }
+        for (int i = 0; i <= amounts; i++)
+        {
+            LOG(INFO) << i << ", " << unsigned(batterys[i].batteryLevel) << ", "
+                      << unsigned(batterys[i].Voltage) << ", " << unsigned(batterys[i].chargeCurrent) << ", "
+                      << unsigned(batterys[i].dischargeCurrent) << ", " << unsigned(batterys[i].maxCellTemperature);
+        }
+        logCount++;
+    }
+
+    void ReadSerialData(int i)
+    {
+        memset(receive_battery_data, 0, receive_data_size);
+        my_serial->flushInput();
+        my_serial->flushOutput();
+
+        my_serial->write(read_battery_state_cmd[i], read_cmd_size);
+        my_serial->read(receive_battery_data, receive_data_size);
+    }
+
+    void ConnectCheck(uint8_t data[], int amount)
+    {
+        // Check Zero
+        for (int i = 0; i < receive_data_size; i++)
+        {
+            if (data[i] != 0)
+            {
+                if (connectError && !is_wrong)
+                {
+                    ROS_INFO("[battery] Battery Connect");
+                    LOG(INFO) << "Battery Connect";
+                    connectErrorSend = false;
+                    connectError = false;
+                    // battery_msg.errorCode = 0;
+                }
+                connectErrorCount = 0;
+                return;
+            }
+        }
+
+        // Data is Zero
+        is_wrong = true;
+        connectErrorCount++;
+        ROS_ERROR("[battery]Battery Connect Wrong");
+        LOG(ERROR) << "Battery Connect Wrong";
+
+        /*if (connectErrorSend)
+        {
+            connectError = true;
+        }
+        else if ((connectErrorCount > ((amount + 1) * connectErrTime)) && !connectError)*/
+        if ((connectErrorCount > ((amount + 1) * connectErrTime)) && !connectError)
+        {
+            ROS_ERROR("[battery] Battery Disconnect, Time: %d", connectErrorCount);
+            LOG(ERROR) << "Battery Disconnect";
+
+            connectError = true;
+        }
+    }
+
+    void SetOldState()
+    {
+        old_battery.state = battery_msg.state;
+        old_battery.batteryID = battery_msg.batteryID;
+        old_battery.batteryLevel = battery_msg.batteryLevel;
+        old_battery.maxCellTemperature = battery_msg.maxCellTemperature;
+        old_battery.errorCode = battery_msg.errorCode;
+        old_battery.chargeCurrent = battery_msg.chargeCurrent;
+        old_battery.dischargeCurrent = battery_msg.dischargeCurrent;
+        old_battery.Voltage = battery_msg.Voltage;
+    }
+};
