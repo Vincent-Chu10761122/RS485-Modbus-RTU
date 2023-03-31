@@ -1,0 +1,106 @@
+#include "battery.h"
+
+//----- main -----
+int main(int argc, char **argv)
+{
+    ros::init(argc, argv, "battery");
+    ros::NodeHandle nh;
+
+    std::string version = "V.4.6.0";
+
+    LogManager *log_manager;
+    log_manager = new LogManager("battery");
+
+    ROS_INFO("[Battery] version:%s", version.c_str());
+    LOG(INFO) << "version:" << version;
+
+    std::string battery_type;
+    std::string comport;
+    int baudrate, amount;
+    int underVoltage, overVoltage, overCurrentCharge, overCurrentDischarge, overTemperature, connectErrTime;
+
+    if (!nh.getParam("/battery/type", battery_type))
+    {
+        ROS_ERROR("[Battery] Not setting battery type");
+        LOG(ERROR) << "Not setting battery type";
+        return 0;
+    }
+    if (!nh.getParam("/battery/comport", comport))
+    {
+        comport = "ttyS0";
+    }
+    if (!nh.getParam("/battery/baudrate", baudrate))
+    {
+        baudrate = 9600;
+    }
+    if (!nh.getParam("/battery/amount", amount))
+    {
+        amount = 1;
+    }
+    // Alarm Param
+    if (!nh.getParam("/battery/Alarm/underVoltage", underVoltage))
+    {
+        underVoltage = 15000;
+    }
+    if (!nh.getParam("/battery/Alarm/overVoltage", overVoltage))
+    {
+        overVoltage = 37000;
+    }
+    if (!nh.getParam("/battery/Alarm/overCurrentCharge", overCurrentCharge))
+    {
+        overCurrentCharge = 80000;
+    }
+    if (!nh.getParam("/battery/Alarm/overCurrentDischarge", overCurrentDischarge))
+    {
+        overCurrentDischarge = 50000;
+    }
+    if (!nh.getParam("/battery/Alarm/overTemperature", overTemperature))
+    {
+        overTemperature = 45;
+    }
+    if (!nh.getParam("/battery/Alarm/connectErrTime", connectErrTime))
+    {
+        connectErrTime = 30;
+    }
+
+    if (battery_type == "JTEK")
+    {
+        JTEK_Battery battery(nh, comport, baudrate, log_manager);
+        battery.MainLoop();
+    }
+    else if (battery_type == "INNER" || (battery_type == "INNERS" && amount == 1))
+    {
+        INNER_Battery battery(nh, comport, baudrate, log_manager);
+        battery.AlarmParam(underVoltage, overVoltage, overCurrentCharge, overCurrentDischarge, overTemperature, connectErrTime);
+        battery.MainLoop();
+    }
+    else if (battery_type == "INNERS" && amount > 1)
+    {
+        INNERS_Battery battery(nh, comport, baudrate, log_manager, amount);
+        battery.AlarmParam(underVoltage, overVoltage, overCurrentCharge, overCurrentDischarge, overTemperature, connectErrTime);
+        battery.MainLoop();
+    }
+    else if (battery_type == "GoldBow")
+    {
+        GoldBow_Battery battery(nh, comport, baudrate, log_manager);
+        battery.MainLoop();
+    }
+    else if (battery_type == "GOLDBOW")
+    {
+        GOLDBOW_Battery battery(nh, comport, baudrate, log_manager);
+        battery.MainLoop();
+    }
+    else if (battery_type == "CELXPERT")
+    {
+        CELXPERT_Battery battery(nh, comport, baudrate, log_manager);
+        battery.MainLoop();
+    }
+    else
+    {
+        ROS_ERROR("[Battery] Wrong battery type:%s amount:%d", battery_type.c_str(), amount);
+        LOG(ERROR) << "Wrong battery type:" << battery_type << " amount:" << amount;
+        return 0;
+    }
+
+    return 0;
+}
