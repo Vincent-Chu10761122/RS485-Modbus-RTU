@@ -1,0 +1,160 @@
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+using System.Windows.Forms.DataVisualization.Charting;
+using System.IO;
+using System.Globalization;
+
+namespace WindowsFormsApp3
+{
+    public partial class Form4 : Form
+    {
+        public Form4()
+        {
+            InitializeComponent();
+            chart1.ChartAreas[0].AxisX.LabelStyle.Format = "HH:mm:ss.ffffff"; //設定X軸為時間類型             
+            chart1.ChartAreas[0].AxisX.ScaleView.Zoomable = true;
+            chart1.ChartAreas[0].AxisX.ScaleView.SizeType = DateTimeIntervalType.Seconds; //設定滾動時間間格類型
+            chart1.ChartAreas[0].AxisX.ScaleView.Size = 10; //設定初始可見區域的時間跨度
+            chart1.ChartAreas[0].AxisX.ScaleView.MinSize = 10; //設定最小可見的時間跨度
+
+            chart1.ChartAreas[0].AxisY.ScaleView.Zoomable = true;
+            chart1.ChartAreas[0].AxisY.ScaleView.SizeType = DateTimeIntervalType.Number;
+            chart1.ChartAreas[0].AxisY.ScaleView.Size = 20;
+            chart1.ChartAreas[0].AxisY.ScaleView.MinSize = 1;
+            chart1.ChartAreas[0].AxisY.Minimum = 0; //設定Y軸最小值
+            chart1.ChartAreas[0].AxisY.Interval = 5; //設定刻度間距
+
+            chart1.AxisViewChanged += Chart1_AxisViewChanged; //綁定滾動事件
+            //chart1.MouseWheel += Chart1_MouseWheel; //設定滑鼠控制放大縮小
+        }
+
+        private void tabPage1_Click(object sender, EventArgs e)
+        {
+            Voltage.SelectedIndex = 0;
+        }
+
+        private void tabPage2_Click(object sender, EventArgs e)
+        {
+            Voltage.SelectedIndex = 1;
+        }
+
+        private void chart1_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void button1_Click(object sender, EventArgs e)
+        {
+            OpenFileDialog openFileDialog = new OpenFileDialog();
+            openFileDialog.Filter = "文本文件 (*.txt)|*.txt";
+
+            if(openFileDialog.ShowDialog() == DialogResult.OK)
+            {
+                chart1.Series["電量"].Points.Clear();
+                string[] lines = File.ReadAllLines(openFileDialog.FileName);
+                List<string[]> dataList = new List<string[]>();
+                foreach(string line in lines)
+                {
+                    if(line.Length >= 70 && line.Length <= 74 && line.Contains(","))
+                    {
+                        //Console.WriteLine(line);
+                        string[] parts = line.Replace(",", "").Split(' ');
+                        dataList.Add(parts);
+                    }
+                }
+
+                foreach (string[] data in dataList)
+                {
+
+                    if (data.Length > 1)
+                    {
+                        if (DateTime.TryParseExact(data[1], "HH:mm:ss.ffffff", null, System.Globalization.DateTimeStyles.None, out DateTime xValue) && double.TryParse(data[6], out double yValue))
+                        {
+                            chart1.Series["電量"].Points.AddXY(xValue, yValue);
+                        }
+                        else
+                        {
+                            Console.WriteLine("無法轉換為DateTime: " + data[1] + " 或雙精度浮點數: " + data[6]);
+                        }
+                    }
+                }
+
+                chart1.ChartAreas[0].AxisX.LabelStyle.Format = "HH:mm:ss.ffffff";
+
+                if (chart1.Series["電量"].Points.Count > 0)
+                {
+                    chart1.ChartAreas[0].AxisX.Minimum = chart1.Series["電量"].Points[0].XValue;
+                    chart1.ChartAreas[0].AxisX.Maximum = chart1.Series["電量"].Points[chart1.Series["電量"].Points.Count - 1].XValue;
+                }
+            }
+        }
+
+        /*
+        private void Chart1_MouseWheel(object sender, MouseEventArgs e)
+        {
+            Chart chart = (Chart)sender;
+            ChartArea chartArea = chart.ChartAreas[0];
+
+            if(e.Delta < 0) //檢查滑鼠滾輪方向
+            {
+                //向後滾動縮小
+                chartArea.AxisX.ScaleView.ZoomReset();
+            }
+            else
+            {
+                //向前滾動放大
+                double zoomFactor = 0.8; //調整放大倍數
+                double xMin = chartArea.AxisX.ScaleView.ViewMinimum; 
+                double xMax = chartArea.AxisX.ScaleView.ViewMaximum;
+                double xPosition = chartArea.AxisX.PixelPositionToValue(e.Location.X);
+                double newXMin = xPosition - (xPosition - xMin) * zoomFactor;
+                double newXMax = xPosition + (xMax - xPosition) * zoomFactor;
+
+                chartArea.AxisX.ScaleView.Zoom(newXMin, newXMax);
+                //chartArea.AxisX.ScaleView.SmallScrollSize = chartArea.AxisX.ScaleView.Size/4;
+            }
+        }
+        */
+
+        private void chart1_MouseDown(object sender, MouseEventArgs e)
+        {
+            if(e.Button == MouseButtons.Left)
+            {
+                isDraggingXAxis = true;
+            }
+        }
+
+        private void chart1_MouseUp(object sender, MouseEventArgs e)
+        {
+            if(e.Button == MouseButtons.Left)
+            {
+                isDraggingXAxis = false;
+            }
+        }
+
+        private bool isDraggingXAxis = false;
+
+        private void Chart1_AxisViewChanged(object sender, ViewEventArgs e)
+        {
+            if (isDraggingXAxis)
+                return;
+        }
+
+        private void button3_Click(object sender, EventArgs e)
+        {
+
+        }
+
+        private void chart2_Click(object sender, EventArgs e)
+        {
+
+        }
+    }
+}
